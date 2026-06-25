@@ -1,26 +1,157 @@
 @import "tailwindcss";
 
+/* ------------------------------------------------------------------ */
+/*  Dunder Mifflin Paper Co. — Agent Fleet                            */
+/*  Brand tokens declared directly in @theme so Tailwind v4 generates  */
+/*  the bg-/text-/border- utilities (bg-navy, text-ink, border-line…). */
+/* ------------------------------------------------------------------ */
+@theme {
+  --color-paper: #f6f3ec;
+  --color-paper-2: #efeae0;
+  --color-card: #ffffff;
+  --color-ink: #14213d;
+  --color-ink-soft: #41506b;
+  --color-ink-faint: #75809a;
+  --color-navy: #0b2545;
+  --color-navy-600: #13315c;
+  --color-navy-400: #2b4a78;
+  --color-line: #ddd6c8;
+  --color-line-strong: #c9c0ad;
+  --color-accent: #b8860b;
+  --color-accent-soft: #e8d9a8;
+  --color-good: #2f7d4f;
+  --color-good-soft: #d6ecdd;
+  --color-warn: #b4690e;
+  --color-warn-soft: #f5e3c6;
+  --color-bad: #9b2226;
+  --color-bad-soft: #f3d6d6;
+
+  --radius-card: 12px;
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* mirror tokens for inline var() use in components */
+  --paper: #f6f3ec;
+  --paper-2: #efeae0;
+  --card: #ffffff;
+  --ink: #14213d;
+  --ink-soft: #41506b;
+  --ink-faint: #75809a;
+  --navy: #0b2545;
+  --navy-600: #13315c;
+  --navy-400: #2b4a78;
+  --line: #ddd6c8;
+  --line-strong: #c9c0ad;
+  --accent: #b8860b;
+  --accent-soft: #e8d9a8;
+  --good: #2f7d4f;
+  --warn: #b4690e;
+  --bad: #9b2226;
+  --radius: 12px;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--color-paper);
+  background-image: radial-gradient(circle at 1px 1px, rgba(20, 33, 61, 0.04) 1px, transparent 0);
+  background-size: 22px 22px;
+  color: var(--color-ink);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-navy);
+}
+
+/* thin, paper-appropriate scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes dm-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes dm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes dm-shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+
+@keyframes dm-drawer-in {
+  from {
+    transform: translateX(16px);
+    opacity: 0.4;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.dm-fade-in {
+  animation: dm-fade-in 0.28s ease-out both;
+}
+.dm-drawer-in {
+  animation: dm-drawer-in 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.dm-spin {
+  animation: dm-spin 0.7s linear infinite;
+}
+.dm-skeleton {
+  background: linear-gradient(90deg, var(--color-paper-2) 25%, #fff 50%, var(--color-paper-2) 75%);
+  background-size: 800px 100%;
+  animation: dm-shimmer 1.4s ease-in-out infinite;
+}
+.dm-focus:focus-visible {
+  outline: 2px solid var(--color-navy-400);
+  outline-offset: 2px;
+}
+
+/* animated ellipsis for "Thinking…" */
+@keyframes dm-dots {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75% { content: "..."; }
+  100% { content: ""; }
+}
+.dm-dots::after {
+  content: "";
+  display: inline-block;
+  width: 1ch;
+  text-align: left;
+  animation: dm-dots 1.4s steps(1) infinite;
 }
