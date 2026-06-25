@@ -94,29 +94,45 @@ export async function* parseSSE(
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+
+  // Parse one SSE record (its lines already split). Lines may keep a trailing
+  // \r when the stream uses CRLF; trim it. `:`-prefixed lines are comments
+  // (e.g. `: heartbeat`) and are ignored.
+  const toRecord = (raw: string): { event: string; data: string } | null => {
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of raw.split("\n")) {
+      const l = line.replace(/\r$/, "");
+      if (l.startsWith(":")) continue; // SSE comment / heartbeat
+      if (l.startsWith("event:")) event = l.slice(6).trim();
+      else if (l.startsWith("data:")) dataLines.push(l.slice(5).trim());
+      else if (l) dataLines.push(l.trim());
+    }
+    return dataLines.length ? { event, data: dataLines.join("\n") } : null;
+  };
+
   try {
     while (true) {
       if (signal?.aborted) break;
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      // Normalize CRLF -> LF so the blank-line record boundary is always "\n\n".
+      // The upstream LangGraph runtime emits CRLF (\r\n\r\n); without this, no
+      // record boundary is ever found and the whole stream buffers to the end.
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
       let idx: number;
       // SSE records are separated by a blank line.
       while ((idx = buffer.indexOf("\n\n")) !== -1) {
         const raw = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
-        let event = "message";
-        const dataLines: string[] = [];
-        for (const line of raw.split("\n")) {
-          if (line.startsWith("event:")) event = line.slice(6).trim();
-          else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
-          else if (line && !line.startsWith(":")) dataLines.push(line.trim());
-        }
-        if (dataLines.length) yield { event, data: dataLines.join("\n") };
+        const rec = toRecord(raw);
+        if (rec) yield rec;
       }
     }
-    if (buffer.trim()) {
-      yield { event: "message", data: buffer.trim() };
+    const tail = buffer.trim();
+    if (tail) {
+      const rec = toRecord(tail);
+      if (rec) yield rec;
     }
   } finally {
     reader.releaseLock();

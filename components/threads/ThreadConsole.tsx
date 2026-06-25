@@ -14,15 +14,14 @@ import { Dialog, ConfirmDialog } from "@/components/ui/Dialog";
 import { PageHeader } from "@/components/brand/AppShell";
 import { AgentIcon } from "@/components/brand/agentIcon";
 import { Threads, Agents } from "@/lib/fleet/endpoints";
-import { streamRun, parseSSE, FleetClientError, errMessage as errMsg } from "@/lib/fleet/client";
+import { errMessage as errMsg } from "@/lib/fleet/client";
 import type { ThreadDetail, ThreadStatus, Agent } from "@/lib/fleet/types";
 import { cn } from "@/lib/cn";
 import { ChatMessage } from "./ChatMessage";
 import { Composer } from "./Composer";
-import {
-  STATUS_TONE, STATUS_LABEL, extractMessages, interpretSSE, resetStreamState, humanizeTool,
-  type ChatMessage as ChatMessageT,
-} from "./shared";
+import { InterruptPanel } from "./InterruptPanel";
+import { useChatStream } from "./useChatStream";
+import { STATUS_TONE, STATUS_LABEL, extractMessages, parseInterrupts } from "./shared";
 
 
 export function ThreadConsole({ threadId }: { threadId: string }) {
@@ -33,8 +32,6 @@ export function ThreadConsole({ threadId }: { threadId: string }) {
   const [agent, setAgent] = React.useState<Agent | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<string | null>(null);
-  const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
-  const [streaming, setStreaming] = React.useState(false);
 
   // Agent picker (only needed if the thread has no bound agent_id).
   const [agents, setAgents] = React.useState<Agent[]>([]);
@@ -48,12 +45,15 @@ export function ThreadConsole({ threadId }: { threadId: string }) {
   const [deleting, setDeleting] = React.useState(false);
   const [resolving, setResolving] = React.useState(false);
 
-  const abortRef = React.useRef<AbortController | null>(null);
-  const scrollRef = React.useRef<HTMLDivElement>(null);
-  const stickToBottom = React.useRef(true);
-
   const agentId = thread?.agent_id || pickAgentId || undefined;
   const isPinned = thread?.metadata?.is_pinned === true;
+
+  // Streaming engine (messages, streaming flag, interrupts, scroll, run lifecycle).
+  const chat = useChatStream({
+    toast,
+    onSettle: () => loadThread({ silent: true }),
+  });
+  const { messages, setMessages, streaming, interrupts, setInterrupts, scrollRef, onScroll, runStream, stop } = chat;
 
   /* --------------------------- data loading --------------------------- */
 
@@ -64,6 +64,7 @@ export function ThreadConsole({ threadId }: { threadId: string }) {
         const t = await Threads.get(threadId);
         setThread(t);
         setLoadError(null);
+        setInterrupts(parseInterrupts(t.interrupts));
         // Render persisted conversation from thread state.
         const persisted = extractMessages(t.values);
         // Don't clobber an in-flight stream with a stale snapshot.
@@ -84,7 +85,7 @@ export function ThreadConsole({ threadId }: { threadId: string }) {
         setLoading(false);
       }
     },
-    [threadId],
+    [threadId, setMessages, setInterrupts],
   );
 
   React.useEffect(() => {
@@ -100,118 +101,45 @@ export function ThreadConsole({ threadId }: { threadId: string }) {
     }
   }, [thread, agents.length]);
 
-  /* --------------------------- autoscroll --------------------------- */
-
-  const onScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  };
-  React.useEffect(() => {
-    if (stickToBottom.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages]);
-
-  React.useEffect(() => () => abortRef.current?.abort(), []);
-
-  /* --------------------------- streaming a run --------------------------- */
+  /* --------------------------- send / respond --------------------------- */
 
   const send = React.useCallback(
-    async (text: string) => {
-      if (streaming) return;
+    (text: string) => {
       if (!agentId) {
         toast.error("Pick an agent", "This thread has no agent bound yet.");
         return;
       }
-      stickToBottom.current = true;
-      resetStreamState();
-
-      const userMsg: ChatMessageT = { id: `u-${Date.now()}`, role: "user", content: text };
-      const aiId = `a-${Date.now()}`;
-      setMessages((prev) => [...prev, userMsg, { id: aiId, role: "assistant", content: "", streaming: true }]);
-      setStreaming(true);
-
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-
-      const appendToAi = (chunk: string, replace = false) =>
-        setMessages((prev) =>
-          prev.map((m) => (m.id === aiId ? { ...m, content: replace ? chunk : m.content + chunk } : m)),
-        );
-      const addStep = (label: string) =>
-        setMessages((prev) =>
-          prev.map((m) => {
-            if (m.id !== aiId) return m;
-            const steps = m.steps ?? [];
-            if (steps[steps.length - 1] === label) return m;
-            return { ...m, steps: [...steps, label] };
-          }),
-        );
-
-      try {
-        const res = await streamRun(
-          threadId,
-          {
-            assistant_id: agentId,
-            input: { messages: [{ role: "user", content: text }] },
-            stream_mode: ["values", "messages-tuple"],
-          },
-          ctrl.signal,
-        );
-
-        // Upstream may return a non-stream error (JSON) instead of an event stream.
-        if (!res.ok) {
-          let detail = `Run failed (${res.status})`;
-          try {
-            const j = await res.json();
-            detail = (j && (j.detail || j.message)) || detail;
-          } catch {
-            /* ignore */
-          }
-          throw new FleetClientError(res.status, detail);
-        }
-
-        let sawError: string | null = null;
-        for await (const { event, data } of parseSSE(res, ctrl.signal)) {
-          if (ctrl.signal.aborted) break;
-          const piece = interpretSSE(event, data);
-          if (!piece) continue;
-          if (piece.error) {
-            sawError = piece.error;
-            continue;
-          }
-          if (piece.done) break;
-          if (piece.tool) addStep(humanizeTool(piece.tool.name, piece.tool.arg));
-          if (typeof piece.text === "string" && piece.text) appendToAi(piece.text, piece.snapshot);
-        }
-
-        if (sawError && !ctrl.signal.aborted) {
-          toast.error("Run error", sawError);
-          appendToAi(`\n\n⚠️ ${sawError}`);
-        }
-      } catch (e) {
-        if (ctrl.signal.aborted) {
-          appendToAi("\n\n— stopped —");
-        } else {
-          const msg = errMsg(e, "The run failed to stream.");
-          toast.error("Streaming failed", msg);
-          appendToAi(`\n\n⚠️ ${msg}`);
-        }
-      } finally {
-        abortRef.current = null;
-        setStreaming(false);
-        setMessages((prev) => prev.map((m) => (m.id === aiId ? { ...m, streaming: false } : m)));
-        // Sync final authoritative state (status, persisted messages).
-        loadThread({ silent: true });
-      }
+      void runStream(
+        threadId,
+        {
+          assistant_id: agentId,
+          input: { messages: [{ role: "user", content: text }] },
+          stream_mode: ["values", "messages-tuple"],
+          stream_subgraphs: true,
+        },
+        text,
+      );
     },
-    [agentId, streaming, threadId, toast, loadThread],
+    [agentId, threadId, toast, runStream],
   );
 
-  const stop = React.useCallback(() => {
-    abortRef.current?.abort();
-  }, []);
+  // Resume a paused run by answering its human-in-the-loop request.
+  const respond = React.useCallback(
+    (answer: string) => {
+      if (!agentId) return;
+      void runStream(
+        threadId,
+        {
+          assistant_id: agentId,
+          command: { resume: { decisions: [{ type: "respond", message: answer }] } },
+          stream_mode: ["values", "messages-tuple"],
+          stream_subgraphs: true,
+        },
+        answer,
+      );
+    },
+    [agentId, threadId, runStream],
+  );
 
   /* --------------------------- thread actions --------------------------- */
 
@@ -393,19 +321,6 @@ export function ThreadConsole({ threadId }: { threadId: string }) {
         </div>
       </div>
 
-      {/* interrupt banner */}
-      {status === "interrupted" && (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-warn/30 bg-warn-soft px-4 py-3 sm:px-6">
-          <div className="flex items-center gap-2 text-[13px] text-warn">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            <span>This run paused for human input. Resolve it to let the agent continue.</span>
-          </div>
-          <Button variant="secondary" size="sm" onClick={resolveInterrupt} loading={resolving}>
-            <CheckCircle2 className="h-4 w-4" /> Resolve
-          </Button>
-        </div>
-      )}
-
       {/* error-status banner (non-blocking) */}
       {status === "error" && thread?.error != null && (
         <div className="border-b border-bad/30 bg-bad-soft px-4 py-2.5 text-[12px] text-bad sm:px-6">
@@ -459,6 +374,28 @@ export function ThreadConsole({ threadId }: { threadId: string }) {
             </Card>
           ) : (
             messages.map((m) => <ChatMessage key={m.id} message={m} agentIcon={icon} agentColor={iconColor} />)
+          )}
+
+          {/* HITL interrupt — inline at the end of the conversation, near the composer */}
+          {status === "interrupted" && !streaming && interrupts.length > 0 &&
+            interrupts.map((it) => (
+              <InterruptPanel
+                key={it.interruptId}
+                interrupt={it}
+                onRespond={respond}
+                onSkip={resolveInterrupt}
+              />
+            ))}
+          {status === "interrupted" && !streaming && interrupts.length === 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-[12px] border border-warn/30 bg-warn-soft px-4 py-3">
+              <div className="flex items-center gap-2 text-[13px] text-warn">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>This run paused for human input. Resolve it to let the agent continue.</span>
+              </div>
+              <Button variant="secondary" size="sm" onClick={resolveInterrupt} loading={resolving}>
+                <CheckCircle2 className="h-4 w-4" /> Resolve
+              </Button>
+            </div>
           )}
         </div>
       </div>

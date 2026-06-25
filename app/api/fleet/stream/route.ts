@@ -43,6 +43,8 @@ export async function POST(req: NextRequest) {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache, no-transform",
       connection: "keep-alive",
+      // Defeat any reverse-proxy/CDN buffering so SSE chunks flush immediately.
+      "x-accel-buffering": "no",
     },
   });
 }

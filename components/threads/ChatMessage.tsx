@@ -1,6 +1,6 @@
 "use client";
 import * as React from "react";
-import { Wrench, Cog, Loader2, Check } from "lucide-react";
+import { Wrench, Cog, Loader2, Check, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { AgentIcon } from "@/components/brand/agentIcon";
 import type { ChatMessage as ChatMessageT } from "./shared";
@@ -63,7 +63,6 @@ export function ChatMessage({
   }
 
   // Assistant: avatar + flowing prose, no bubble border.
-  const thinking = !!message.streaming && !message.content && !(message.steps && message.steps.length);
   return (
     <div className="flex items-start gap-3">
       <span
@@ -76,43 +75,99 @@ export function ChatMessage({
         <AgentIcon icon={agentIcon} color={agentColor} size={15} />
       </span>
       <div className="min-w-0 flex-1 pt-0.5">
-        {/* deep-agent tool steps */}
-        {message.steps && message.steps.length > 0 && (
-          <div className="mb-2 flex flex-col gap-1">
-            {message.steps.map((s, i) => {
-              const isLast = i === message.steps!.length - 1;
-              const active = isLast && message.streaming && !message.content;
-              return (
-                <span
-                  key={`${s}-${i}`}
-                  className="inline-flex w-fit items-center gap-1.5 rounded-full border border-line bg-paper-2/60 px-2.5 py-0.5 text-[11px] text-ink-soft"
-                >
-                  {active ? (
-                    <Loader2 className="h-3 w-3 dm-spin text-navy-400" />
-                  ) : (
-                    <Check className="h-3 w-3 text-good" />
-                  )}
-                  {s}
-                </span>
-              );
-            })}
-          </div>
+        {/* Live agent activity (tool steps) — streams in while working,
+            collapses to a summary once a text answer arrives. */}
+        {(message.streaming || (message.steps && message.steps.length > 0)) && (
+          <StepList
+            steps={message.steps ?? []}
+            streaming={!!message.streaming}
+            hasContent={!!message.content}
+          />
         )}
-        {thinking ? (
-          <span className="inline-flex items-center gap-2 text-[13px] text-ink-faint">
-            <Loader2 className="h-3.5 w-3.5 dm-spin text-navy-400" />
-            <span>Thinking</span>
-            <span className="dm-dots" aria-hidden />
+        <div className="whitespace-pre-wrap break-words text-[14px] leading-[1.65] text-ink">
+          {message.content || (message.streaming ? "" : message.steps?.length ? "" : <span className="text-ink-faint">(no content)</span>)}
+          {message.streaming && message.content && (
+            <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-0.5 animate-pulse bg-navy-400 align-middle" />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Live agent activity. While the agent is working (streaming, no answer text yet)
+ * it streams the actual tool events in — the current action with a spinner, plus
+ * the few most-recent completed steps — so the user sees what the agent is doing.
+ * Once a text answer starts (or the run ends) it collapses to a compact, expandable
+ * "N steps" summary.
+ */
+function StepList({
+  steps,
+  streaming,
+  hasContent,
+}: {
+  steps: string[];
+  streaming: boolean;
+  hasContent: boolean;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const active = streaming && !hasContent;
+
+  // ---- Live activity feed while the agent works ----
+  if (active) {
+    if (steps.length === 0) {
+      // Before the first event arrives — a quiet working pulse, no "Thinking" label.
+      return (
+        <div className="mb-2 inline-flex items-center gap-2 text-ink-faint">
+          <Loader2 className="h-3.5 w-3.5 dm-spin text-navy-400" />
+        </div>
+      );
+    }
+    // Emphasize the CURRENT action as one clean line; fold prior steps into a quiet count.
+    const current = steps[steps.length - 1];
+    const doneCount = steps.length - 1;
+    return (
+      <div className="mb-2 flex flex-col gap-0.5">
+        <span className="dm-fade-in inline-flex items-center gap-1.5 text-[13px] font-medium text-ink">
+          <Loader2 className="h-3.5 w-3.5 shrink-0 dm-spin text-navy-400" />
+          {current}
+          <span className="dm-dots" aria-hidden />
+        </span>
+        {doneCount > 0 && (
+          <span className="inline-flex items-center gap-1.5 pl-[20px] text-[11px] text-ink-faint">
+            <Check className="h-3 w-3 shrink-0 text-good" />
+            {doneCount} step{doneCount === 1 ? "" : "s"} done
           </span>
-        ) : (
-          <div className="whitespace-pre-wrap break-words text-[14px] leading-[1.65] text-ink">
-            {message.content || (message.streaming ? "" : message.steps?.length ? "" : <span className="text-ink-faint">(no content)</span>)}
-            {message.streaming && message.content && (
-              <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-0.5 animate-pulse bg-navy-400 align-middle" />
-            )}
-          </div>
         )}
       </div>
+    );
+  }
+
+  // ---- Collapsed summary once the answer arrives / run ends ----
+  if (steps.length === 0) return null;
+  return (
+    <div className="mb-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="dm-focus inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-paper-2/60 px-2.5 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-navy-400"
+      >
+        <Check className="h-3 w-3 shrink-0 text-good" />
+        <span className="truncate">{`${steps.length} step${steps.length === 1 ? "" : "s"}`}</span>
+        <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open && "rotate-90")} />
+      </button>
+
+      {open && (
+        <div className="mt-1 flex flex-col gap-1 border-l border-line pl-3">
+          {steps.map((s, i) => (
+            <span key={`${s}-${i}`} className="inline-flex items-center gap-1.5 text-[11px] text-ink-faint">
+              <Check className="h-3 w-3 shrink-0 text-good" />
+              {s}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

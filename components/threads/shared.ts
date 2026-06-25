@@ -113,8 +113,12 @@ export function extractMessages(values: unknown): ChatMessage[] {
     if (typeof m !== "object") return;
     const o = m as Record<string, unknown>;
     const role = normalizeRole(o.role, o.type);
+    // Drop TOOL/function messages entirely — their content is a raw tool RESULT
+    // (file contents, find_tools definition dumps, etc.), not conversation. Rendering
+    // them floods the chat with JSON/blobs; tool activity is shown as step chips instead.
+    if (role === "tool") return;
     const content = coerceContent(o.content ?? o.text ?? o.data);
-    // Skip empty tool/system noise but keep anything with text.
+    // Skip empty system noise but keep anything with text.
     if (!content && role !== "user") return;
     out.push({
       id: typeof o.id === "string" ? o.id : `m-${i}`,
@@ -128,6 +132,89 @@ export function extractMessages(values: unknown): ChatMessage[] {
 
 /* --------------------------- SSE event interpretation --------------------------- */
 
+/**
+ * Smooths chunky/bursty LLM streams into a fluid typewriter reveal. The model
+ * often emits the whole answer in a handful of large chunks within ~1s; rather
+ * than painting those at once, we queue the text and reveal it a few characters
+ * per animation frame so it visibly types out. `onText` gets the revealed text.
+ */
+export function createSmoothStreamer(onText: (full: string) => void) {
+  let target = ""; // everything received so far
+  let shown = 0; // chars revealed
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let draining = false; // true once the stream ended; reveal the rest, then stop
+  let onDrained: (() => void) | null = null;
+
+  const stopTimer = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
+
+  const tick = () => {
+    if (shown >= target.length) {
+      stopTimer();
+      if (draining && onDrained) {
+        const cb = onDrained;
+        onDrained = null;
+        cb();
+      }
+      return;
+    }
+    // Reveal a steady ~3 chars/frame, scaling up only when far behind so we never
+    // lag badly on huge bursts. At ~60fps this types ~180 chars/sec — readable yet brisk.
+    const remaining = target.length - shown;
+    const step = Math.max(3, Math.min(remaining, Math.ceil(remaining / 20)));
+    shown += step;
+    onText(target.slice(0, shown));
+  };
+
+  const ensureTimer = () => {
+    if (!timer) timer = setInterval(tick, 16); // ~60fps
+  };
+
+  return {
+    /** Queue more streamed text. */
+    push(chunk: string) {
+      target += chunk;
+      ensureTimer();
+    },
+    /** Replace the whole target (for snapshot-style updates). */
+    set(full: string) {
+      target = full;
+      if (shown > target.length) shown = target.length;
+      ensureTimer();
+    },
+    /**
+     * The stream ended — keep typing out the remaining buffered text at the normal
+     * pace, then resolve. This is what makes a fully-buffered reply still animate.
+     */
+    drain(): Promise<void> {
+      draining = true;
+      if (shown >= target.length) return Promise.resolve();
+      ensureTimer();
+      return new Promise<void>((resolve) => {
+        onDrained = resolve;
+      });
+    },
+    /** Reveal everything immediately and stop (final safety). */
+    finish() {
+      stopTimer();
+      shown = target.length;
+      onText(target);
+    },
+    /** Stop without revealing the rest (call on abort/unmount). */
+    cancel() {
+      stopTimer();
+      onDrained = null;
+    },
+    get value() {
+      return target.slice(0, shown);
+    },
+  };
+}
+
 /** Humanize a deep-agent tool step for a status chip. */
 export function humanizeTool(name: string, arg?: string): string {
   const base = (() => {
@@ -137,12 +224,17 @@ export function humanizeTool(name: string, arg?: string): string {
       case "edit_file": return "Editing";
       case "ls":
       case "list_files": return "Browsing files";
+      case "glob":
+      case "grep": return "Searching files";
+      case "find_tools": return "Finding tools";
+      case "write_todos": return "Planning";
       case "enter_agent_generator_mode": return "Designing the agent";
       case "exit_agent_generator_mode": return "Finalizing the agent";
       case "message_user": return "Asking a question";
       case "task": return "Delegating to a subagent";
       case "tavily_web_search":
-      case "exa_web_search": return "Searching the web";
+      case "exa_web_search":
+      case "web_search": return "Searching the web";
       default: return name.replace(/_/g, " ");
     }
   })();
@@ -161,10 +253,90 @@ export interface StreamPiece {
   error?: string;
   /** True when the stream signals the run is finished. */
   done?: boolean;
-  /** A tool step the agent is taking (deep-agent activity), for status chips. */
-  tool?: { name: string; arg?: string };
+  /** Tool steps extracted from a `values` snapshot (complete args, e.g. file paths). */
+  tools?: { name: string; arg?: string }[];
+  /** A single tool call surfaced live from the `messages-tuple` stream (at call start). */
+  tool?: { name: string; id?: string };
   /** Workspace files from a `values` snapshot (deep-agent file outputs). */
   files?: Record<string, { content?: string; type?: string }>;
+  /** HITL interrupt requests surfaced mid-stream from a `values` snapshot's `__interrupt__`. */
+  interrupts?: ParsedInterrupt[];
+}
+
+/* --------------------------- HITL interrupts --------------------------- */
+
+/** A human-in-the-loop request parsed from a thread's `interrupts` payload. */
+export interface ParsedInterrupt {
+  /** The interrupt id (used to key the resume Command). */
+  interruptId: string;
+  /** Tool that triggered the pause, e.g. "message_user". */
+  actionName: string;
+  /** Human-readable description from the action request. */
+  description?: string;
+  /** Clarifying questions, when the action is message_user. */
+  questions: string[];
+  /** Suggested answers per question (parallel to questions; may be empty). */
+  suggestedAnswers: string[][];
+  /** Allowed decisions for this action, e.g. ["respond"] or ["approve","reject"]. */
+  allowedDecisions: string[];
+}
+
+/**
+ * Extract HITL interrupt requests from a thread's `interrupts` object.
+ * Shape: { [interruptId]: [ { value: { action_requests:[...], review_configs:[...] } } ] }
+ */
+export function parseInterrupts(interrupts: unknown): ParsedInterrupt[] {
+  if (!interrupts || typeof interrupts !== "object") return [];
+  const out: ParsedInterrupt[] = [];
+  for (const [interruptId, entries] of Object.entries(interrupts as Record<string, unknown>)) {
+    out.push(...parseInterruptEntries(interruptId, entries));
+  }
+  return out;
+}
+
+/**
+ * Parse the `__interrupt__` array that arrives inside a streamed `values` snapshot
+ * (shape: `[{ value: { action_requests, review_configs } }, ...]`). Surfaced live so the
+ * panel appears the instant the agent pauses, not only after the run settles.
+ */
+export function parseStreamInterrupt(interruptArray: unknown): ParsedInterrupt[] {
+  if (!Array.isArray(interruptArray)) return [];
+  // Use a stable key; the resume Command targets the active interrupt regardless of id.
+  return parseInterruptEntries("__stream__", interruptArray);
+}
+
+/** Shared body: turn one interrupt's entries into ParsedInterrupt[]. */
+function parseInterruptEntries(interruptId: string, entries: unknown): ParsedInterrupt[] {
+  const out: ParsedInterrupt[] = [];
+  {
+    const list = Array.isArray(entries) ? entries : [entries];
+    for (const entry of list) {
+      const value = (entry as Record<string, unknown>)?.value as Record<string, unknown> | undefined;
+      if (!value) continue;
+      const requests = Array.isArray(value.action_requests) ? value.action_requests : [];
+      const configs = Array.isArray(value.review_configs) ? value.review_configs : [];
+      for (const req of requests as Record<string, unknown>[]) {
+        const name = String(req.name ?? (req.args as Record<string, unknown>)?.name ?? "action");
+        const args = (req.args ?? {}) as Record<string, unknown>;
+        const cfg = (configs as Record<string, unknown>[]).find(
+          (c) => c.action_name === name,
+        ) as Record<string, unknown> | undefined;
+        out.push({
+          interruptId,
+          actionName: name,
+          description: typeof req.description === "string" ? req.description : undefined,
+          questions: Array.isArray(args.questions) ? (args.questions as string[]) : [],
+          suggestedAnswers: Array.isArray(args.suggested_answers)
+            ? (args.suggested_answers as string[][])
+            : [],
+          allowedDecisions: Array.isArray(cfg?.allowed_decisions)
+            ? (cfg!.allowed_decisions as string[])
+            : ["respond"],
+        });
+      }
+    }
+  }
+  return out;
 }
 
 let __snapshotLen = 0;
@@ -209,18 +381,16 @@ function interpretMessageChunk(data: unknown): StreamPiece | null {
   if (!chunk || typeof chunk !== "object") return null;
   const c = chunk as Record<string, unknown>;
 
-  // Tool call starting (deep-agent activity: read_file, write_file, ls, …).
-  const calls = (Array.isArray(c.tool_calls) && c.tool_calls.length
-    ? c.tool_calls
-    : Array.isArray(c.tool_call_chunks)
-      ? c.tool_call_chunks
-      : []) as Record<string, unknown>[];
-  for (const call of calls) {
-    const name = typeof call.name === "string" ? call.name : undefined;
-    if (name) return { tool: { name, arg: toolArg(call.args) } };
+  // Ignore TOOL/function messages entirely — their content is a tool RESULT (file
+  // contents, find_tools definition dumps, etc.), never assistant text. Surfacing
+  // those would dump raw JSON/blobs into the chat bubble. Tool activity is shown
+  // separately as steps. Only AI/assistant chunks produce displayable text below.
+  const kind = String((c.type ?? c.role ?? "")).toLowerCase();
+  if (kind === "tool" || kind === "toolmessage" || kind === "toolmessagechunk" || kind === "function") {
+    return null;
   }
 
-  // Text token delta from content (string or text blocks). tool_use blocks → no text.
+  // 1) Text token delta — the visible assistant reply.
   const content = c.content;
   if (typeof content === "string" && content) return { text: content };
   if (Array.isArray(content)) {
@@ -233,15 +403,29 @@ function interpretMessageChunk(data: unknown): StreamPiece | null {
             : "",
       )
       .join("");
-    // A tool_use block inside content also signals activity.
-    const toolUse = content.find(
-      (p) => p && typeof p === "object" && (p as Record<string, unknown>).type === "tool_use",
-    ) as Record<string, unknown> | undefined;
     if (text) return { text };
-    if (toolUse && typeof toolUse.name === "string") {
-      return { tool: { name: toolUse.name, arg: toolArg(toolUse.input) } };
-    }
   }
+
+  // 2) Tool call START — surface activity LIVE the moment a tool is invoked, so the
+  // user sees progress during the (often long) tool-heavy phase instead of a frozen
+  // bubble. The first chunk of a tool call carries the tool `name` + `id`; subsequent
+  // `input_json_delta` chunks (same id, no name) stream the args and are ignored here.
+  // The richer label with the filename still comes from `values` snapshots later.
+  const named = (arr: unknown): { name: string; id?: string } | null => {
+    if (!Array.isArray(arr)) return null;
+    for (const p of arr) {
+      if (p && typeof p === "object") {
+        const o = p as Record<string, unknown>;
+        if (typeof o.name === "string" && o.name) {
+          return { name: o.name, id: typeof o.id === "string" ? o.id : undefined };
+        }
+      }
+    }
+    return null;
+  };
+  const tool = named(c.tool_call_chunks) ?? (Array.isArray(content) ? named(content) : null);
+  if (tool) return { tool };
+
   return null;
 }
 
@@ -305,10 +489,26 @@ export function interpretSSE(event: string, data: string): StreamPiece | null {
   // values is NOT diffed here (messages-tuple already streams it) to avoid double-counting.
   if (ev === "values") {
     if (parsed && typeof parsed === "object") {
-      const f = (parsed as Record<string, unknown>).files;
-      if (f && typeof f === "object") {
-        return { files: f as Record<string, { content?: string; type?: string }> };
+      const v = parsed as Record<string, unknown>;
+      const out: StreamPiece = {};
+      if (v.files && typeof v.files === "object") {
+        out.files = v.files as Record<string, { content?: string; type?: string }>;
       }
+      // Extract tool steps with COMPLETE args (file paths, etc.) from the latest AI
+      // message — values snapshots carry full tool_calls, unlike streamed chunks.
+      const msgs = Array.isArray(v.messages) ? (v.messages as Record<string, unknown>[]) : [];
+      const lastAi = [...msgs].reverse().find((m) => m?.type === "ai");
+      const calls = Array.isArray(lastAi?.tool_calls) ? (lastAi!.tool_calls as Record<string, unknown>[]) : [];
+      const tools = calls
+        .filter((tc) => typeof tc.name === "string")
+        .map((tc) => ({ name: tc.name as string, arg: toolArg(tc.args) }));
+      if (tools.length) out.tools = tools;
+      // Surface a HITL pause the instant it streams in (don't wait for run settle).
+      if (v.__interrupt__) {
+        const parsed = parseStreamInterrupt(v.__interrupt__);
+        if (parsed.length) out.interrupts = parsed;
+      }
+      if (out.files || out.tools || out.interrupts) return out;
     }
     return null;
   }

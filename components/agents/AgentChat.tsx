@@ -7,15 +7,11 @@ import { Button, Select, Spinner, EmptyState } from "@/components/ui";
 import { useToast } from "@/components/ui/Toast";
 import { ChatMessage } from "@/components/threads/ChatMessage";
 import { Composer } from "@/components/threads/Composer";
-import {
-  extractMessages,
-  interpretSSE,
-  resetStreamState,
-  humanizeTool,
-  type ChatMessage as ChatMessageT,
-} from "@/components/threads/shared";
+import { InterruptPanel } from "@/components/threads/InterruptPanel";
+import { useChatStream } from "@/components/threads/useChatStream";
+import { extractMessages, parseInterrupts } from "@/components/threads/shared";
 import { Threads } from "@/lib/fleet/endpoints";
-import { streamRun, parseSSE, FleetClientError, errMessage as errMsg } from "@/lib/fleet/client";
+import { errMessage as errMsg } from "@/lib/fleet/client";
 import type { ThreadSummary } from "@/lib/fleet/types";
 import { cn } from "@/lib/cn";
 
@@ -60,17 +56,25 @@ export function AgentChat({
   const [threadId, setThreadId] = React.useState<string | null>(null);
   const [loadingThreads, setLoadingThreads] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
-
-  const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
   const [loadingMsgs, setLoadingMsgs] = React.useState(false);
-  const [streaming, setStreaming] = React.useState(false);
-
-  const scrollRef = React.useRef<HTMLDivElement>(null);
-  const stickToBottom = React.useRef(true);
-  const abortRef = React.useRef<AbortController | null>(null);
   const initedRef = React.useRef(false);
+  // Holds the latest loadMessages so the stream's onSettle can call it without a
+  // declaration-order cycle (loadMessages needs the hook's setters, the hook needs onSettle).
+  const loadMessagesRef = React.useRef<(id: string, opts?: { silent?: boolean }) => void>(() => {});
 
-  React.useEffect(() => () => abortRef.current?.abort(), []);
+  // Re-sync thread state after each run, and refresh the thread list (for titles).
+  const handleSettle = React.useCallback(
+    (id: string) => {
+      loadMessagesRef.current(id, { silent: true });
+      Threads.list({ agent_id: agentId, page_size: 20 })
+        .then((r) => setThreads(r.items))
+        .catch(() => {});
+    },
+    [agentId],
+  );
+
+  const chat = useChatStream({ toast, onSettle: handleSettle, onFiles });
+  const { messages, setMessages, streaming, interrupts, setInterrupts, scrollRef, onScroll, runStream, stop } = chat;
 
   /* ---------------------- load this agent's threads ---------------------- */
   const loadThreads = React.useCallback(async () => {
@@ -98,7 +102,7 @@ export function AgentChat({
     } finally {
       setLoadingThreads(false);
     }
-  }, [agentId, toast, alwaysNewThread]);
+  }, [agentId, toast, alwaysNewThread, setMessages]);
 
   // Initialize once when first active.
   React.useEffect(() => {
@@ -115,6 +119,8 @@ export function AgentChat({
       try {
         const detail = await Threads.get(id);
         setMessages(extractMessages(detail.values));
+        // Surface any pending human-in-the-loop requests (clarifying questions, approvals).
+        setInterrupts(parseInterrupts(detail.interrupts));
         if (onFiles) {
           const files = (detail.values as Record<string, unknown> | undefined)?.files as
             | Record<string, { content?: string; type?: string }>
@@ -129,19 +135,16 @@ export function AgentChat({
         if (!opts.silent) setLoadingMsgs(false);
       }
     },
-    [toast, onFiles],
+    [toast, onFiles, setMessages, setInterrupts],
   );
+  React.useEffect(() => {
+    loadMessagesRef.current = loadMessages;
+  }, [loadMessages]);
 
   React.useEffect(() => {
     if (threadId) loadMessages(threadId);
     else setMessages([]);
-  }, [threadId, loadMessages]);
-
-  React.useEffect(() => {
-    if (stickToBottom.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages]);
+  }, [threadId, loadMessages, setMessages]);
 
   /* --------------------------- new thread --------------------------- */
   const newThread = React.useCallback(async () => {
@@ -157,93 +160,54 @@ export function AgentChat({
     } finally {
       setCreating(false);
     }
-  }, [agentId, toast]);
+  }, [agentId, toast, setMessages]);
 
-  /* --------------------------- send / stream --------------------------- */
+  /* --------------------------- send / respond --------------------------- */
   const send = React.useCallback(
-    async (text: string) => {
-      if (streaming || !threadId) return;
-      stickToBottom.current = true;
-      resetStreamState();
-
-      const userMsg: ChatMessageT = { id: `u-${Date.now()}`, role: "user", content: text };
-      const aiId = `a-${Date.now()}`;
-      setMessages((prev) => [...prev, userMsg, { id: aiId, role: "assistant", content: "", streaming: true }]);
-      setStreaming(true);
-
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-      const appendToAi = (chunk: string, replace = false) =>
-        setMessages((prev) => prev.map((m) => (m.id === aiId ? { ...m, content: replace ? chunk : m.content + chunk } : m)));
-      const addStep = (label: string) =>
-        setMessages((prev) =>
-          prev.map((m) => {
-            if (m.id !== aiId) return m;
-            const steps = m.steps ?? [];
-            if (steps[steps.length - 1] === label) return m; // dedupe consecutive
-            return { ...m, steps: [...steps, label] };
-          }),
-        );
-
-      try {
-        const res = await streamRun(
-          threadId,
-          {
-            assistant_id: agentId,
-            input: { messages: [{ role: "user", content: text }] },
-            stream_mode: ["values", "messages-tuple"],
-          },
-          ctrl.signal,
-        );
-        if (!res.ok) {
-          let detail = `Run failed (${res.status})`;
-          try {
-            const j = await res.json();
-            detail = (j && (j.detail || j.message)) || detail;
-          } catch {
-            /* ignore */
-          }
-          throw new FleetClientError(res.status, detail);
-        }
-        let sawError: string | null = null;
-        for await (const { event, data } of parseSSE(res, ctrl.signal)) {
-          if (ctrl.signal.aborted) break;
-          const piece = interpretSSE(event, data);
-          if (!piece) continue;
-          if (piece.error) {
-            sawError = piece.error;
-            continue;
-          }
-          if (piece.done) break;
-          if (piece.files && onFiles) onFiles(piece.files);
-          if (piece.tool) addStep(humanizeTool(piece.tool.name, piece.tool.arg));
-          if (typeof piece.text === "string" && piece.text) appendToAi(piece.text, piece.snapshot);
-        }
-        if (sawError && !ctrl.signal.aborted) {
-          toast.error("Run error", sawError);
-          appendToAi(`\n\n⚠️ ${sawError}`);
-        }
-      } catch (e) {
-        if (ctrl.signal.aborted) appendToAi("\n\n— stopped —");
-        else {
-          const msg = errMsg(e, "The run failed to stream.");
-          toast.error("Streaming failed", msg);
-          appendToAi(`\n\n⚠️ ${msg}`);
-        }
-      } finally {
-        abortRef.current = null;
-        setStreaming(false);
-        setMessages((prev) => prev.map((m) => (m.id === aiId ? { ...m, streaming: false } : m)));
-        loadMessages(threadId, { silent: true });
-        Threads.list({ agent_id: agentId, page_size: 20 })
-          .then((r) => setThreads(r.items))
-          .catch(() => {});
-      }
+    (text: string) => {
+      if (!threadId) return;
+      void runStream(
+        threadId,
+        {
+          assistant_id: agentId,
+          input: { messages: [{ role: "user", content: text }] },
+          stream_mode: ["values", "messages-tuple"],
+          stream_subgraphs: true,
+        },
+        text,
+      );
     },
-    [agentId, streaming, threadId, toast, loadMessages, onFiles],
+    [agentId, threadId, runStream],
   );
 
-  const stop = React.useCallback(() => abortRef.current?.abort(), []);
+  // Answer a human-in-the-loop interrupt by resuming the paused run.
+  const respondToInterrupt = React.useCallback(
+    (_interruptId: string, answer: string) => {
+      if (!threadId) return;
+      void runStream(
+        threadId,
+        {
+          assistant_id: agentId,
+          command: { resume: { decisions: [{ type: "respond", message: answer }] } },
+          stream_mode: ["values", "messages-tuple"],
+          stream_subgraphs: true,
+        },
+        answer,
+      );
+    },
+    [agentId, threadId, runStream],
+  );
+
+  // Skip a HITL interrupt: let the run continue without an answer.
+  const skipInterrupt = React.useCallback(async () => {
+    if (!threadId) return;
+    try {
+      await Threads.resolveInterrupt(threadId);
+      setInterrupts([]);
+    } catch (e) {
+      toast.error("Couldn't skip", errMsg(e));
+    }
+  }, [threadId, setInterrupts, toast]);
 
   return (
     <div className={cn("flex flex-col", className)}>
@@ -272,7 +236,7 @@ export function AgentChat({
       )}
 
       {/* messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6">
+      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-4 py-6">
         {loadingThreads || (loadingMsgs && messages.length === 0) ? (
           <div className="flex h-full items-center justify-center text-ink-faint">
             <Spinner className="h-5 w-5" />
@@ -291,6 +255,17 @@ export function AgentChat({
             {messages.map((m) => (
               <ChatMessage key={m.id} message={m} agentIcon={agentIcon} agentColor={agentColor} />
             ))}
+
+            {/* HITL interrupt — inline in the flow, under the agent's turn */}
+            {interrupts.length > 0 && !streaming &&
+              interrupts.map((it) => (
+                <InterruptPanel
+                  key={it.interruptId}
+                  interrupt={it}
+                  onRespond={(answer) => respondToInterrupt(it.interruptId, answer)}
+                  onSkip={skipInterrupt}
+                />
+              ))}
           </div>
         )}
       </div>
@@ -309,8 +284,10 @@ export function AgentChat({
             onSend={send}
             onStop={stop}
             streaming={streaming}
-            disabled={!threadId || loadingThreads}
-            placeholder={`Message ${agentName}…`}
+            disabled={!threadId || loadingThreads || interrupts.length > 0}
+            placeholder={
+              interrupts.length > 0 ? "Answer the question above to continue…" : `Message ${agentName}…`
+            }
           />
         </div>
       </div>
