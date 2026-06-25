@@ -65,7 +65,7 @@ export function Dashboard() {
       // Show every agent visible to the caller. `tenant` = workspace-shared only;
       // `user` = owned + directly-shared. Neither is a superset, so we fetch both and
       // dedupe by id (both are server-scoped to what this caller may see — no escalation).
-      const opts = { include: ["owner"] as const, sort_by: "updated_at" as const, sort_order: "desc" as const, page_size: 100 };
+      const opts = { include: ["owner"], sort_by: "updated_at", sort_order: "desc" as const, page_size: 100 };
       const [tenantRes, userRes] = await Promise.all([
         Agents.list({ audience: "tenant", ...opts }).catch(() => ({ items: [] as Agent[] })),
         Agents.list({ audience: "user", ...opts }).catch(() => ({ items: [] as Agent[] })),

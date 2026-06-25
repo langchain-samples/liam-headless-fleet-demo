@@ -105,8 +105,9 @@ export async function GET() {
 
       // Per agent — by assistant_id / agent_name (Agent Builder labeled).
       const assistantId = String(md.assistant_id ?? "");
-      const agentName =
-        (md.agent_name && String(md.agent_name)) ||
+      const rawName = md.agent_name ? String(md.agent_name) : "";
+      const agentName: string =
+        rawName ||
         (assistantId === AGENT_BUILDER_ID ? "Agent Builder" : assistantId ? `Agent ${assistantId.slice(0, 8)}` : "Unknown agent");
       const aKey = assistantId || agentName;
       const a = agents.get(aKey) ?? { key: aKey, name: agentName, cost: 0, tokens: 0, runs: 0 };
