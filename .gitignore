@@ -41,3 +41,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# agent instruction files — kept locally, not committed
+AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
