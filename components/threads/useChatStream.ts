@@ -115,6 +115,13 @@ export function useChatStream(opts: {
       });
       smootherRef.current = smoother;
 
+      // Track which streamed message id we're currently appending. When the id
+      // changes mid-run (a new assistant turn after a tool call), the runtime
+      // starts a fresh message whose text would otherwise butt up against the
+      // previous turn ("…config.json file:Now let me…"). Insert a separator at
+      // that boundary so distinct turns read as distinct lines.
+      let lastMsgId: string | undefined;
+
       const addStep = (label: string) =>
         setMessages((prev) =>
           prev.map((m) => {
@@ -159,8 +166,24 @@ export function useChatStream(opts: {
           // Tool steps from `values` snapshots carry COMPLETE args (e.g. filenames).
           if (piece.tools) for (const t of piece.tools) addStep(humanizeTool(t.name, t.arg));
           if (typeof piece.text === "string" && piece.text) {
-            if (piece.snapshot) smoother.set(piece.text);
-            else smoother.push(piece.text);
+            if (piece.snapshot) {
+              smoother.set(piece.text);
+            } else {
+              // New assistant turn (id changed) → separate it from the prior one,
+              // unless there's a natural boundary already.
+              if (
+                piece.messageId &&
+                lastMsgId &&
+                piece.messageId !== lastMsgId &&
+                smoother.value &&
+                !/\s$/.test(smoother.value) &&
+                !/^\s/.test(piece.text)
+              ) {
+                smoother.push("\n\n");
+              }
+              smoother.push(piece.text);
+            }
+            if (piece.messageId) lastMsgId = piece.messageId;
           }
         }
 

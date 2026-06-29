@@ -155,3 +155,31 @@ body {
   text-align: left;
   animation: dm-dots 1.4s steps(1) infinite;
 }
+
+/* Markdown prose inside assistant chat bubbles. react-markdown emits bare
+   elements; give them readable spacing without a heavy typography plugin. */
+.dm-md > :first-child { margin-top: 0; }
+.dm-md > :last-child { margin-bottom: 0; }
+.dm-md p { margin: 0 0 0.7em; }
+.dm-md ul, .dm-md ol { margin: 0.4em 0 0.7em; padding-left: 1.4em; }
+.dm-md ul { list-style: disc; }
+.dm-md ol { list-style: decimal; }
+.dm-md li { margin: 0.2em 0; }
+.dm-md li > ul, .dm-md li > ol { margin: 0.2em 0; }
+.dm-md h1, .dm-md h2, .dm-md h3 { font-weight: 700; line-height: 1.3; margin: 1em 0 0.4em; }
+.dm-md h1 { font-size: 1.3em; }
+.dm-md h2 { font-size: 1.15em; }
+.dm-md h3 { font-size: 1.05em; }
+.dm-md strong { font-weight: 700; color: var(--color-ink); }
+.dm-md em { font-style: italic; }
+.dm-md blockquote {
+  margin: 0.5em 0;
+  padding-left: 0.9em;
+  border-left: 3px solid var(--color-line-strong);
+  color: var(--color-ink-soft);
+}
+.dm-md pre { margin: 0.5em 0; }
+.dm-md hr { margin: 1em 0; border: none; border-top: 1px solid var(--color-line); }
+.dm-md table { border-collapse: collapse; margin: 0.5em 0; font-size: 0.95em; }
+.dm-md th, .dm-md td { border: 1px solid var(--color-line); padding: 0.35em 0.6em; text-align: left; }
+.dm-md th { background: var(--color-paper-2); font-weight: 600; }

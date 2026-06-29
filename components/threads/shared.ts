@@ -249,6 +249,10 @@ export interface StreamPiece {
   text?: string;
   /** When true, `text` is a full snapshot of the assistant message, not an increment. */
   snapshot?: boolean;
+  /** The streamed message's id (messages/partial). A change of id marks a new
+   *  assistant turn (e.g. narration resuming after a tool call) — the consumer
+   *  inserts a separator so distinct turns don't concatenate (`file:Now`). */
+  messageId?: string;
   /** A surfaced error string from the run. */
   error?: string;
   /** True when the stream signals the run is finished. */
@@ -391,8 +395,9 @@ function interpretMessageChunk(data: unknown): StreamPiece | null {
   }
 
   // 1) Text token delta — the visible assistant reply.
+  const msgId = typeof c.id === "string" ? c.id : undefined;
   const content = c.content;
-  if (typeof content === "string" && content) return { text: content };
+  if (typeof content === "string" && content) return { text: content, messageId: msgId };
   if (Array.isArray(content)) {
     const text = content
       .map((p) =>
@@ -403,7 +408,7 @@ function interpretMessageChunk(data: unknown): StreamPiece | null {
             : "",
       )
       .join("");
-    if (text) return { text };
+    if (text) return { text, messageId: msgId };
   }
 
   // 2) Tool call START — surface activity LIVE the moment a tool is invoked, so the

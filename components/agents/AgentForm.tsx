@@ -312,8 +312,23 @@ export function AgentForm({ agent, onSaved }: { agent?: Agent; onSaved?: () => v
     }
   }
 
+  // ⌘/Ctrl+Enter submits from anywhere in the form (incl. textareas, where plain
+  // Enter inserts a newline). Only fires when the required fields are filled and
+  // we're not already submitting, so it can't trigger an invalid/duplicate save.
+  function handleFormKeyDown(e: React.KeyboardEvent<HTMLFormElement>) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.repeat) {
+      if (submitting || !name.trim() || !modelId) return;
+      e.preventDefault();
+      void handleSubmit(e);
+    }
+  }
+
   return (
-    <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
+    <form
+      onSubmit={handleSubmit}
+      onKeyDown={handleFormKeyDown}
+      className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]"
+    >
       {/* ---- main column ---- */}
       <div className="space-y-6">
         {/* Basics */}
@@ -673,7 +688,12 @@ export function AgentForm({ agent, onSaved }: { agent?: Agent; onSaved?: () => v
         </Card>
 
         {/* Actions */}
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex items-center justify-end gap-3">
+          <span className="hidden text-[12px] text-ink-faint sm:inline">
+            <kbd className="rounded border border-line-strong bg-paper-2 px-1.5 py-0.5 font-mono text-[11px]">⌘</kbd>
+            <kbd className="ml-0.5 rounded border border-line-strong bg-paper-2 px-1.5 py-0.5 font-mono text-[11px]">↵</kbd>
+            <span className="ml-1.5">to {isEdit ? "save" : "create"}</span>
+          </span>
           <Button
             type="button"
             variant="ghost"

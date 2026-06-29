@@ -3,6 +3,7 @@ import * as React from "react";
 import { Wrench, Cog, Loader2, Check, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { AgentIcon } from "@/components/brand/agentIcon";
+import { Markdown } from "./Markdown";
 import type { ChatMessage as ChatMessageT } from "./shared";
 
 /**
@@ -84,10 +85,15 @@ export function ChatMessage({
             hasContent={!!message.content}
           />
         )}
-        <div className="whitespace-pre-wrap break-words text-[14px] leading-[1.65] text-ink">
-          {message.content || (message.streaming ? "" : message.steps?.length ? "" : <span className="text-ink-faint">(no content)</span>)}
-          {message.streaming && message.content && (
-            <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-0.5 animate-pulse bg-navy-400 align-middle" />
+        <div className="break-words text-[14px] leading-[1.65] text-ink">
+          {message.content ? (
+            <Markdown>{message.content}</Markdown>
+          ) : message.streaming ? (
+            ""
+          ) : message.steps?.length ? (
+            ""
+          ) : (
+            <span className="text-ink-faint">(no content)</span>
           )}
         </div>
       </div>
@@ -117,10 +123,12 @@ function StepList({
   // ---- Live activity feed while the agent works ----
   if (active) {
     if (steps.length === 0) {
-      // Before the first event arrives — a quiet working pulse, no "Thinking" label.
+      // Before the first event arrives — a quiet working pulse, no "Thinking"
+      // label. Match the avatar's height (h-7) and center so it lines up with it
+      // instead of floating above the avatar's middle.
       return (
-        <div className="mb-2 inline-flex items-center gap-2 text-ink-faint">
-          <Loader2 className="h-3.5 w-3.5 dm-spin text-navy-400" />
+        <div className="mb-2 flex h-7 items-center gap-2 text-ink-faint">
+          <Loader2 className="h-4 w-4 dm-spin text-navy-400" />
         </div>
       );
     }
