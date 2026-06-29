@@ -5,42 +5,93 @@ that lets "employees" build, run, and manage Fleet agents. It exercises the full
 (agents, threads/runs with live SSE streaming, OAuth connections, secrets, integrations, skills,
 models, tenants) through a polished Next.js front end.
 
+The whole site is gated behind **Google sign-in restricted to `@langchain.dev`**, and each signed-in
+user drives Fleet with **their own LangSmith API key** — so agents run as the real person, with their
+own connections and run attribution. See [Authentication](#authentication).
+
 ## Architecture
 
 ```
-Browser (React)  ──fetch──►  /api/fleet/*  (Next route handlers)  ──+secret headers──►  Fleet API
-                                  ▲ inject X-Api-Key + X-Tenant-Id from env, server-side only
+                    ┌─ proxy.ts (NextAuth middleware): every route requires a session;
+                    │   only /login + static assets are public
+Browser (React) ──► /api/fleet/*  (Next route handlers)  ──+ X-Api-Key + X-Tenant-Id ──►  Fleet API
+                        ▲ injects the SIGNED-IN USER's key (from the session JWT), server-side only
 ```
 
-- **The LangSmith API key never reaches the browser.** All Fleet calls go through the server-side
-  proxy at `app/api/fleet/[...path]/route.ts` (and `app/api/fleet/stream/route.ts` for SSE), which
-  injects credentials from environment variables and allowlists the upstream host.
+- **No API key ever reaches the browser.** All Fleet calls go through the server-side proxy at
+  `app/api/fleet/[...path]/route.ts` (and `app/api/fleet/stream/route.ts` for SSE), which injects the
+  current user's key + `X-Tenant-Id` and allowlists the upstream host.
+- **Per-user identity.** The proxy reads the caller's personal LangSmith key from their NextAuth
+  session JWT (`lib/fleet/userKey.ts`) and sends *that* as `X-Api-Key` — never a shared key. Each
+  request acts as the real user, so OAuth connections (Slack, etc.) and run attribution are per-user.
 - Typed client + endpoints live in `lib/fleet/` (`server.ts` is server-only; `client.ts`/`endpoints.ts`
   are used by the browser and only ever call our own `/api/fleet/*`).
 - Design system in `components/ui`, brand shell in `components/brand`, feature areas under `app/*`.
 - **Cost analytics** use a second server-only route (`app/api/fleet/cost/route.ts`) that reads the
-  workspace's LangSmith **tracing** data — see [Cost / usage tracking](#cost--usage-tracking). It reuses
-  the same server-only credentials, so no key reaches the browser there either.
+  workspace's LangSmith **tracing** data — see [Cost / usage tracking](#cost--usage-tracking). This
+  route deliberately uses the **shared admin key** (`FLEET_API_KEY`) for workspace-wide aggregation,
+  not the per-user key; no key reaches the browser there either.
+
+## Authentication
+
+Two layers, both server-enforced:
+
+1. **Who may enter — Google OAuth, `@langchain.dev` only.** NextAuth/Auth.js v5 with a Google
+   provider. The access policy lives in `lib/auth/access.ts` (server-only): it requires a
+   Google-**verified** email whose domain is in `ALLOWED_EMAIL_DOMAINS` (exact match — `evil-langchain.dev`
+   and `langchain.dev.evil.com` are both rejected), and **fails closed** if the allowlist is unset.
+   `proxy.ts` gates every route; `/login` is the only public page. Branded sign-in at `app/login/`.
+2. **What they act as — per-user LangSmith key.** Each user pastes their own personal key (`lsv2_…`)
+   on `/settings`; a server action validates it against Fleet before saving. The key is stored as a
+   claim in the **encrypted session JWT** (HTTP-only; never copied into the client-visible session —
+   the client only sees a `hasFleetKey` boolean). Until a user sets a key, action routes return
+   `401 no_fleet_key` and the sidebar prompts them to Settings (no fallback to a shared key).
 
 ## Setup
 
 Create `.env.local` (gitignored) with:
 
 ```bash
+# --- Fleet API ---
 FLEET_API_BASE=https://api.smith.langchain.com/v1/fleet
-FLEET_API_KEY=lsv2_...           # a Fleet-enabled LangSmith API key
+FLEET_API_KEY=lsv2_...           # shared/admin key — used ONLY by the cost route (workspace-wide analytics)
 FLEET_TENANT_ID=<workspace-uuid> # required by workspace-scoped endpoints
 FLEET_ORG_ID=<org-uuid>          # optional
+
+# --- Auth (Google OAuth via NextAuth/Auth.js) ---
+NEXTAUTH_URL=http://localhost:3030          # prod: https://<your-domain> (no trailing slash). AUTH_URL also works.
+NEXTAUTH_SECRET=<openssl rand -base64 32>   # signs/encrypts the session JWT. AUTH_SECRET also works.
+GOOGLE_CLIENT_ID=<oauth client id>          # Google Cloud → Credentials → OAuth client (Web application)
+GOOGLE_CLIENT_SECRET=<oauth client secret>
+ALLOWED_EMAIL_DOMAINS=langchain.dev         # comma-separated; REQUIRED (empty = deny everyone, fail closed)
 ```
+
+**Google OAuth client** — add these Authorized redirect URIs to the OAuth client:
+
+```
+http://localhost:3030/api/auth/callback/google         # local
+https://<your-domain>/api/auth/callback/google          # production
+```
+
+> **Note on keys.** `FLEET_API_KEY` here is the **shared admin key** used only for the cost/analytics
+> route. End users do **not** use it for actions — each user supplies their own key in `/settings`,
+> which is injected per-request by the proxy. See [Authentication](#authentication).
+>
+> **Deploying (Vercel).** Set all the above as project env vars. `NEXTAUTH_URL` **must** be the full
+> `https://` origin — a scheme-less value (e.g. `headless-fleet-demo.vercel.app`) makes NextAuth throw
+> on every route. `.env.local` is gitignored and never ships; configure prod separately.
 
 ## Run
 
 ```bash
 npm install
-npm run dev          # http://localhost:3000 (use PORT=3030 if 3000 is taken)
+npm run dev          # http://localhost:3030 (PORT=3030 matches NEXTAUTH_URL; OAuth callback needs the port to match)
 npm run build        # production build
 npx tsc --noEmit     # typecheck
 ```
+
+First run, signed in: you'll be prompted to set your LangSmith API key in **Settings** before agents
+and threads will load.
 
 ## Areas
 
@@ -62,6 +113,9 @@ npx tsc --noEmit     # typecheck
   **Workspace → OAuth Providers**.
 - **Workspace** (`/admin`) — secrets (write-only, with a model-required-secrets cross-check),
   integrations (MCP servers), **OAuth Providers**, skills (file-tree editor), and the models catalog.
+- **Settings** (`/settings`) — where each user pastes and validates their personal LangSmith API key
+  (stored server-side in the session JWT). The sidebar shows a "set your API key" prompt until one is
+  saved; agent/thread calls return `401 no_fleet_key` until then.
 
 ## Cost / usage tracking
 
@@ -77,13 +131,15 @@ traced to a project named `fleet` in the workspace, and each root run carries `c
 3. Aggregate server-side and return names + numbers only:
    - **Per agent** — keyed by `assistant_id` / `agent_name` (the platform Agent Builder is labeled).
    - **Per user** — keyed by the agent's `dm_owner` persona tag, mapped to a display name via a
-     server-side allowlist. (The Fleet identity endpoints `403` and there is effectively one real
-     LangSmith user, so the demo-owner tag is the only viable per-user attribution; untagged / Agent
-     Builder runs are excluded from the per-user list but still counted in totals and per-agent.)
+     server-side allowlist. (Per-user spend is grouped by the demo-owner tag rather than the real
+     caller; untagged / Agent Builder runs are excluded from the per-user list but still counted in
+     totals and per-agent.)
 
-It calls the same host as Fleet (`api.smith.langchain.com`) and reuses the server-only
-`FLEET_API_KEY` + `FLEET_TENANT_ID`; the key never reaches the browser. Cost only appears once agents
-have actually **run** (creating an agent is free); empty workspaces show a "No usage yet" state.
+It calls the same host as Fleet (`api.smith.langchain.com`) and **intentionally uses the shared
+`FLEET_API_KEY` + `FLEET_TENANT_ID`** (not the per-user key) — workspace-wide aggregation needs a key
+that can read the whole tracing project, so this route is the one place the admin key is used. The key
+never reaches the browser. Cost only appears once agents have actually **run** (creating an agent is
+free); empty workspaces show a "No usage yet" state.
 
 > **Note:** the older `DM Demo —` name prefix for demo agents has been dropped from existing agents.
 > Persona headshots live in `public/avatars/` (`PersonaAvatar` falls back to an initials chip).

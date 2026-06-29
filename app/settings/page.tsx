@@ -80,7 +80,7 @@ export default function SettingsPage() {
           )}
 
           <form onSubmit={handleSave}>
-            <Field label="LangSmith API key" hint="Personal key from LangSmith → Settings → API Keys. Starts with lsv2_. Stored encrypted in your session; never shown to anyone.">
+            <Field label="LangSmith API key" hint="A personal key (lsv2_…) from LangSmith → Settings → API Keys, scoped to the Testing workspace. Stored encrypted; never shown to anyone.">
               <Input
                 type="password"
                 autoComplete="off"
@@ -89,6 +89,15 @@ export default function SettingsPage() {
                 onChange={(e) => setKey(e.target.value)}
               />
             </Field>
+
+            <div className="mt-3 flex items-start gap-2 rounded-[8px] border border-navy-400/30 bg-paper-2 px-3 py-2.5 text-[12px] text-ink-soft">
+              <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" />
+              <span>
+                The key must belong to the <span className="font-medium text-ink">Testing workspace</span>.
+                If you don&apos;t have access, ask <span className="font-medium text-ink">Liam</span> (or
+                another DE) to add you to it.
+              </span>
+            </div>
 
             {error && (
               <p role="alert" className="mt-2 rounded-[8px] border border-bad/30 bg-bad-soft px-3 py-2 text-[13px] text-bad">
