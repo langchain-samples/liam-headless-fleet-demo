@@ -102,10 +102,12 @@ and threads will load.
 - **Agents** (`/agents`) — roster, and a per-agent page with a live **Chat** mode and an **Edit**
   mode (name, model, system prompt, tools, subagents, skills, connections, backend, permissions).
   Building a new agent is chat-first via the workspace Agent Builder (`/agents/new`), with a manual
-  form fallback. Clone and delete supported.
+  form fallback (where **⌘/Ctrl+Enter** submits). Clone and delete supported.
 - **Threads** (`/threads`) — per-agent inbox with attention count + filters, and a live chat console
-  that streams runs over Server-Sent Events; resolve-interrupt, bulk pin/mark-read. Interrupt prompts
-  (HITL clarifying questions / approvals) render inline in the conversation near the composer.
+  that streams runs over Server-Sent Events. Assistant replies render as **markdown**
+  (`react-markdown` + GFM — bold, lists, code, links, tables). Resolve-interrupt, bulk pin/mark-read.
+  Interrupt prompts (HITL clarifying questions / approvals) render inline in the conversation near the
+  composer.
 - **Connections** (`/connections`) — a curated **service catalog** (Gmail, Slack, GitHub, Salesforce,
   …) showing your real **Connect / Connected** status, derived from your OAuth tokens + the org's
   providers. Connecting runs the OAuth authorization flow; "Connected" services are usable by your
