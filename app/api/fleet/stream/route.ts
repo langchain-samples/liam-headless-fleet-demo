@@ -1,8 +1,10 @@
 // SSE pass-through for streaming a thread run.
 // POST { thread_id, body } -> upstream POST /threads/{thread_id}/runs/stream (text/event-stream),
-// piped straight back to the browser as a streaming response.
+// piped straight back to the browser as a streaming response. Runs as the
+// logged-in user via their personal Fleet key (from the session JWT).
 import { NextRequest } from "next/server";
 import { fleetRaw, isConfigured } from "@/lib/fleet/server";
+import { requireUserFleetKey } from "@/lib/fleet/userKey";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,6 +16,10 @@ export async function POST(req: NextRequest) {
       { status: 503 },
     );
   }
+
+  const { apiKey, errorResponse } = await requireUserFleetKey(req);
+  if (errorResponse) return errorResponse;
+
   const { thread_id, body } = (await req.json()) as {
     thread_id: string;
     body: unknown;
@@ -27,6 +33,7 @@ export async function POST(req: NextRequest) {
     body: body ?? {},
     accept: "text/event-stream",
     signal: req.signal,
+    apiKey,
   });
 
   if (!upstream.ok || !upstream.body) {

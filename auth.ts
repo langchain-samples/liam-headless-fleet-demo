@@ -2,6 +2,28 @@ import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 import { allowedDomains, isEmailAllowed } from "@/lib/auth/access";
 
+// --- Type augmentation: per-user Fleet key lives in the JWT (server-only),
+// never copied into the client-visible session. The session only exposes a
+// boolean `hasFleetKey` so the UI can gate without seeing the value. ---
+declare module "next-auth/jwt" {
+  interface JWT {
+    email?: string | null;
+    /** The user's personal LangSmith key (lsv2_...). SERVER-ONLY — never sent to the client. */
+    fleetKey?: string;
+  }
+}
+declare module "next-auth" {
+  interface Session {
+    user: {
+      email?: string | null;
+      name?: string | null;
+      image?: string | null;
+      /** Whether this user has set their own Fleet API key. The value itself stays server-side. */
+      hasFleetKey?: boolean;
+    };
+  }
+}
+
 // Whole-site auth: Google sign-in, restricted to the domains in
 // ALLOWED_EMAIL_DOMAINS. The access policy lives in `@/lib/auth/access`;
 // this file is just NextAuth wiring.
@@ -32,13 +54,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     // Gate sign-in on the domain allowlist (verified email + exact domain).
     signIn: ({ profile }) => isEmailAllowed(profile),
-    jwt({ token, user }) {
+    jwt({ token, user, trigger, session }) {
       if (user) token.email = user.email;
+      // The /settings save action calls `update({ fleetKey })`, which arrives
+      // here as a trigger==="update". We persist the (already-validated) key
+      // into the JWT, or clear it when an empty value is sent (Remove).
+      if (trigger === "update" && session && "fleetKey" in session) {
+        const next = (session as { fleetKey?: string }).fleetKey;
+        if (next) token.fleetKey = next;
+        else delete token.fleetKey;
+      }
       return token;
     },
     session({ session, token }) {
-      if (session.user && token.email) {
-        session.user.email = token.email as string;
+      if (session.user) {
+        if (token.email) session.user.email = token.email as string;
+        // Expose only whether a key exists — never the key itself.
+        session.user.hasFleetKey = Boolean(token.fleetKey);
       }
       return session;
     },

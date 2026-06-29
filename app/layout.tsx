@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Source_Serif_4, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import { SessionProvider } from "next-auth/react";
 import { ToastProvider } from "@/components/ui/Toast";
 import { PersonaProvider } from "@/lib/personas";
 import { AppShell } from "@/components/brand/AppShell";
@@ -23,11 +24,13 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en" className={`${sans.variable} ${serif.variable} ${mono.variable} h-full antialiased`}>
       <body className="min-h-full">
-        <ToastProvider>
-          <PersonaProvider>
-            <AppShell>{children}</AppShell>
-          </PersonaProvider>
-        </ToastProvider>
+        <SessionProvider>
+          <ToastProvider>
+            <PersonaProvider>
+              <AppShell>{children}</AppShell>
+            </PersonaProvider>
+          </ToastProvider>
+        </SessionProvider>
       </body>
     </html>
   );

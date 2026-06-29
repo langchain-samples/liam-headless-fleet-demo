@@ -1,7 +1,9 @@
 // Authenticated proxy: browser -> /api/fleet/<upstream path> -> Fleet API (+ secret headers).
-// The API key only exists server-side (lib/fleet/server). The client never sees it.
+// Each request acts AS the logged-in user, using their personal Fleet key from
+// the session JWT (never the shared key, and never exposed to the client).
 import { NextRequest } from "next/server";
 import { fleetRaw, isConfigured } from "@/lib/fleet/server";
+import { requireUserFleetKey } from "@/lib/fleet/userKey";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,6 +23,11 @@ async function handle(req: NextRequest, ctx: { params: Promise<{ path: string[] 
       { status: 503 },
     );
   }
+
+  // Require the caller's own key — no fallback to the shared key for actions.
+  const { apiKey, errorResponse } = await requireUserFleetKey(req);
+  if (errorResponse) return errorResponse;
+
   const { path } = await ctx.params;
   const upstreamPath = path.join("/");
   const query = req.nextUrl.search; // includes leading ?
@@ -43,6 +50,7 @@ async function handle(req: NextRequest, ctx: { params: Promise<{ path: string[] 
     query,
     body,
     tenantScoped: isTenantScoped(upstreamPath),
+    apiKey,
   });
 
   // Pass status + JSON (or text) straight back.

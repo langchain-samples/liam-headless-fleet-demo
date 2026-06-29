@@ -2,8 +2,9 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
-  LayoutDashboard, Bot, MessagesSquare, Plug, Settings2, Menu, X,
+  LayoutDashboard, Bot, MessagesSquare, Plug, Settings2, Menu, X, KeyRound,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -31,6 +32,8 @@ const NAV: NavItem[] = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() || "/";
   const { isAdmin } = usePersona();
+  const { data: session } = useSession();
+  const needsKey = session?.user ? !session.user.hasFleetKey : false;
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const nav = NAV.filter((item) => !item.adminOnly || isAdmin);
 
@@ -69,6 +72,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         })}
       </nav>
       <div className="shrink-0 space-y-2 border-t border-line p-3">
+        {needsKey && (
+          <Link
+            href="/settings"
+            onClick={() => setMobileOpen(false)}
+            className="dm-focus flex items-center gap-2 rounded-[8px] border border-warn/30 bg-warn-soft px-3 py-2 text-[12px] font-medium text-warn hover:brightness-95"
+          >
+            <KeyRound className="h-3.5 w-3.5 shrink-0" />
+            Set your API key to use the Fleet
+          </Link>
+        )}
+        <Link
+          href="/settings"
+          onClick={() => setMobileOpen(false)}
+          className={cn(
+            "dm-focus flex items-center gap-3 rounded-[10px] px-3 py-2 text-sm font-medium transition-colors",
+            pathname.startsWith("/settings")
+              ? "bg-navy text-white shadow-sm"
+              : "text-ink-soft hover:bg-paper-2 hover:text-ink",
+          )}
+        >
+          <KeyRound className={cn("h-[18px] w-[18px]", pathname.startsWith("/settings") ? "text-white" : "text-ink-faint")} />
+          Settings
+        </Link>
         <PersonaSwitcher />
         <LogoutButton />
       </div>

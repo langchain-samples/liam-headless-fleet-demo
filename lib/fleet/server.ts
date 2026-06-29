@@ -35,6 +35,11 @@ export interface FleetFetchInit {
   // pass through for streaming
   signal?: AbortSignal;
   accept?: string;
+  // Per-user LangSmith key (lsv2_...). When set, the request acts AS that user
+  // instead of the shared FLEET_API_KEY. Used by the action proxy so each
+  // logged-in user's own connections / run attribution apply. The analytics
+  // (cost) route deliberately does NOT pass this — it uses the shared key.
+  apiKey?: string;
 }
 
 function buildUrl(path: string, query?: string): string {
@@ -49,7 +54,8 @@ function buildUrl(path: string, query?: string): string {
 
 export function fleetHeaders(init: FleetFetchInit = {}): Headers {
   const h = new Headers();
-  h.set("X-Api-Key", API_KEY);
+  // Per-user key when provided, else the shared workspace key.
+  h.set("X-Api-Key", init.apiKey || API_KEY);
   if (init.tenantScoped !== false) h.set("X-Tenant-Id", TENANT_ID);
   if (init.body !== undefined) h.set("Content-Type", "application/json");
   h.set("Accept", init.accept || "application/json");
