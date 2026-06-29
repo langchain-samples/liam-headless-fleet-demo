@@ -17,7 +17,7 @@ export function DunderMifflinLogo({
       width={387}
       height={111}
       priority
-      sizes="220px"
+      sizes="320px"
       className={cn(
         "h-auto select-none rounded",
         compact ? "w-[150px]" : "w-full max-w-[200px]",

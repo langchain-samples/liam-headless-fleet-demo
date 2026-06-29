@@ -9,6 +9,7 @@ import {
 import { cn } from "@/lib/cn";
 import { DunderMifflinLogo } from "./DunderMifflinLogo";
 import { PersonaSwitcher } from "./PersonaSwitcher";
+import { LogoutButton } from "./LogoutButton";
 import { usePersona } from "@/lib/personas";
 
 interface NavItem {
@@ -33,6 +34,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const nav = NAV.filter((item) => !item.adminOnly || isAdmin);
 
+  // The login screen renders standalone — no sidebar / persona chrome.
+  if (pathname === "/login") return <>{children}</>;
+
   const SidebarInner = (
     <>
       <div className="flex h-20 items-center border-b border-line px-5">
@@ -44,7 +48,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <DunderMifflinLogo />
         </Link>
       </div>
-      <nav className="flex-1 space-y-0.5 p-3">
+      <nav className="flex-1 space-y-0.5 overflow-y-auto p-3">
         {nav.map((item) => {
           const active = item.match(pathname);
           const Icon = item.icon;
@@ -64,16 +68,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           );
         })}
       </nav>
-      <div className="border-t border-line p-3">
+      <div className="shrink-0 space-y-2 border-t border-line p-3">
         <PersonaSwitcher />
+        <LogoutButton />
       </div>
     </>
   );
 
   return (
     <div className="flex min-h-screen">
-      {/* desktop sidebar */}
-      <aside className="hidden w-[244px] shrink-0 flex-col border-r border-line bg-card/70 backdrop-blur lg:flex">
+      {/* desktop sidebar — sticky full-height so the footer (persona + logout)
+          is always visible without scrolling; only the nav list scrolls. */}
+      <aside className="sticky top-0 hidden h-screen w-[244px] shrink-0 flex-col border-r border-line bg-card/70 backdrop-blur lg:flex">
         {SidebarInner}
       </aside>
 
