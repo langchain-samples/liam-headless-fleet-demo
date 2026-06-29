@@ -26,9 +26,19 @@ export async function requireUserFleetKey(req: NextRequest): Promise<FleetKeyRes
   // getToken decrypts the JWT cookie with AUTH_SECRET/NEXTAUTH_SECRET and gives
   // us the raw claims (including fleetKey), unlike auth() which returns the
   // trimmed, client-safe session.
+  //
+  // In production over HTTPS, Auth.js prefixes the cookie name with `__Secure-`
+  // (e.g. `__Secure-authjs.session-token`). getToken must be told to look for
+  // the secure cookie, or it finds nothing in prod and every call 401s even
+  // though the user is logged in. Detect HTTPS from the proxied request.
+  const isHttps =
+    req.nextUrl.protocol === "https:" ||
+    req.headers.get("x-forwarded-proto") === "https";
+
   const token = await getToken({
     req,
     secret: process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET,
+    secureCookie: isHttps,
   });
   const key = typeof token?.fleetKey === "string" ? token.fleetKey : "";
   if (!key) {
